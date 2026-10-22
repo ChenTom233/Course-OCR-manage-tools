@@ -218,3 +218,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific
+tests/output/
+tests/samples/
+.claude/
+
+# Real timetable samples may contain personal data; never commit them
+/*.pdf
+/*.xls
+/*.xlsx
