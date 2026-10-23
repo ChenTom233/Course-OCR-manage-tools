@@ -81,6 +81,8 @@ def normalize_text(value) -> str:
     s = str(value).replace("　", " ").replace("\xa0", " ")
     for ch in ("—", "–", "－", "~", "～", "至"):
         s = s.replace(ch, "-")
+    # OCR 常把连字符读成汉字“一”，仅替换数字之间的情形
+    s = re.sub(r"(?<=\d)\s*一\s*(?=\d)", "-", s)
     s = re.sub(r"[ \t]+", " ", s)
     return s.strip()
 
@@ -878,25 +880,28 @@ def courses_from_items(items: list[Item], log: LogFn = _noop) -> list[Course]:
         return []
     header_days.sort(key=lambda d: d[1])
     header_bottom = max(it[3] for it in rows[header_index]["items"])
-    left_bound = min(x for _, x in header_days) - 20
+    day_xs = [x for _, x in header_days]
+    gaps = [right - left for left, right in zip(day_xs, day_xs[1:])]
+    # 左边界取第一列左边线，避免漏掉列内左对齐的课程名
+    left_bound = day_xs[0] - (min(gaps) / 2 if gaps else 20)
 
-    period_anchors: list[tuple[int, float]] = []
+    period_anchors: list[tuple[int, float, str]] = []
     for row in rows[header_index + 1:]:
         for item in row["items"]:
             center = (item[0] + item[2]) / 2
             if center >= left_bound:
                 continue
-            pr = parse_period(item[4])
-            if not pr:
-                tr = parse_time_range(item[4])
-                if tr:
-                    pr = periods_from_times(*tr)
+            tr = parse_time_range(item[4])
+            pr = periods_from_times(*tr) if tr else parse_period(item[4])
             if pr:
                 for p in range(pr[0], pr[1] + 1):
-                    period_anchors.append((p, (item[1] + item[3]) / 2))
+                    period_anchors.append((p, (item[1] + item[3]) / 2, item[4]))
+    # 网格补全的锚点形如“第 3 节”，比 OCR 从时间列拆出的裸数字可靠
+    if any("第" in text for _, _, text in period_anchors):
+        period_anchors = [a for a in period_anchors if "第" in a[2]]
     # 同一个节次取第一次出现的位置
     dedup_anchors: dict[int, float] = {}
-    for p, cy in period_anchors:
+    for p, cy, _ in period_anchors:
         dedup_anchors.setdefault(p, cy)
     anchors = sorted(dedup_anchors.items(), key=lambda kv: kv[1])
 

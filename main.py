@@ -1,22 +1,23 @@
 """课表识别助手入口。"""
-import ctypes
 import sys
 
 
-def _enable_dpi_awareness() -> None:
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
-
-
 def main() -> int:
-    _enable_dpi_awareness()
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QFont
+    from PyQt5.QtWidgets import QApplication
+
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    app = QApplication(sys.argv)
+    app.setApplicationName("课表识别助手")
+    app.setFont(QFont("Microsoft YaHei UI", 10))
+
     from app.gui import TimetableApp
 
-    app = TimetableApp()
-    app.mainloop()
-    return 0
+    window = TimetableApp()
+    window.show()
+    return app.exec_()
 
 
 if __name__ == "__main__":

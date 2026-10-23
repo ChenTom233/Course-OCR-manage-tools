@@ -1,6 +1,7 @@
 """PDF 课表解析：文本层表格 → 坐标还原 → 文本行兜底 → OCR。"""
 from __future__ import annotations
 
+from .ocr import recognize
 from .parsing import (
     Item,
     LogFn,
@@ -15,8 +16,6 @@ from .parsing import (
     parse_grid,
     parse_table,
 )
-
-_ocr_engine = None
 
 
 def _cell_text(value) -> str:
@@ -61,52 +60,27 @@ def _words_to_items(page) -> list[Item]:
     return items
 
 
-def _get_ocr_engine(log: LogFn):
-    global _ocr_engine
-    if _ocr_engine is None:
-        log("  正在加载 OCR 引擎（首次较慢）…")
-        from rapidocr_onnxruntime import RapidOCR
-
-        _ocr_engine = RapidOCR()
-    return _ocr_engine
-
-
 def _ocr_page(path: str, page_index: int, log: LogFn) -> list:
     try:
-        import numpy as np
         import pypdfium2 as pdfium
     except ImportError:
-        log("  缺少 OCR 依赖：pip install rapidocr-onnxruntime pypdfium2 numpy")
+        log("  缺少 OCR 依赖：pip install pypdfium2 Pillow")
         return []
 
     try:
-        engine = _get_ocr_engine(log)
         doc = pdfium.PdfDocument(path)
         try:
             page = doc[page_index]
-            pil = page.render(scale=2.0).to_pil()
+            image = page.render(scale=3.0).to_pil()
         finally:
             doc.close()
-        # RapidOCR 默认按 OpenCV 的 BGR 顺序处理
-        image = np.array(pil.convert("RGB"))[:, :, ::-1]
-        result, _ = engine(image)
     except Exception as exc:
         log(f"  OCR 失败：{exc}")
         return []
 
-    items: list[Item] = []
-    for entry in result or []:
-        try:
-            box, text, score = entry
-        except (TypeError, ValueError):
-            continue
-        if float(score) < 0.4 or not str(text).strip():
-            continue
-        xs = [float(p[0]) for p in box]
-        ys = [float(p[1]) for p in box]
-        items.append((min(xs), min(ys), max(xs), max(ys), str(text).strip()))
-
-    log(f"  OCR 识别到 {len(items)} 个文字块")
+    items = recognize(image, log)
+    if not items:
+        return []
     return courses_from_items(items, log)
 
 
