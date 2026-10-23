@@ -7,7 +7,7 @@ import re
 import threading
 from datetime import date, timedelta
 
-from PyQt5.QtCore import QRectF, QTimer, Qt
+from PyQt5.QtCore import QRectF, QTime, QTimer, Qt
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -36,6 +36,7 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -46,6 +47,7 @@ from .exporters import export_ics, export_json, export_xlsx
 from .models import Course, DAY_NAMES, DEFAULT_PERIOD_TIMES, Timetable, compress_weeks
 from .parsing import extract_weeks
 from .pdf_parser import parse_pdf
+from .settings import load_period_times, save_period_times
 
 _UI_FONT = "Microsoft YaHei UI"
 _GRID_COLORS = [
@@ -242,6 +244,162 @@ class CourseDialog(QDialog):
             time_start=start,
             time_end=end,
         )
+        self.accept()
+
+
+def _period_duration(start_text: str, end_text: str) -> int:
+    start = QTime.fromString(start_text, "HH:mm")
+    end = QTime.fromString(end_text, "HH:mm")
+    if start.isValid() and end.isValid():
+        minutes = start.secsTo(end) // 60
+        if 5 <= minutes <= 240:
+            return minutes
+    return 45
+
+
+class ScheduleDialog(QDialog):
+    """编辑标准作息：每节课的开始时间与时长。"""
+
+    def __init__(self, parent=None, period_times=None, max_period: int = 12):
+        super().__init__(parent)
+        self.result: dict[int, tuple[str, str]] | None = None
+        self.setWindowTitle("作息时间设置")
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(6)
+        lay.addWidget(_hint("修改每节课的开始时间与时长，结束时间自动计算。"))
+        lay.addWidget(_hint("保存后，周课表预览和日历(ICS)导出会使用新的作息。"))
+        lay.addSpacing(6)
+
+        periods = min(20, max(12, max_period, max(period_times or {}, default=0)))
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.NoFrame)
+        area.setMinimumHeight(400)
+        body = QWidget()
+        grid = QGridLayout(body)
+        grid.setContentsMargins(0, 0, 6, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+        header_font = QFont(_UI_FONT, 9, QFont.Bold)
+        for col, text in enumerate(("节次", "开始时间", "时长", "结束时间")):
+            label = QLabel(text)
+            label.setFont(header_font)
+            label.setAlignment(Qt.AlignCenter)
+            grid.addWidget(label, 0, col)
+
+        self._rows: list[tuple[QTimeEdit, QSpinBox, QLabel]] = []
+        prev_end: QTime | None = None
+        for period in range(1, periods + 1):
+            start_text, end_text = (period_times or {}).get(period, ("", ""))
+            if not start_text and prev_end is not None:
+                start_text = prev_end.addSecs(10 * 60).toString("HH:mm")
+            start = QTime.fromString(start_text, "HH:mm")
+            if not start.isValid():
+                start = QTime(8, 0)
+            duration = _period_duration(start_text, end_text)
+
+            name_label = QLabel(str(period))
+            name_label.setAlignment(Qt.AlignCenter)
+
+            time_edit = QTimeEdit(start)
+            time_edit.setDisplayFormat("HH:mm")
+            time_edit.setFixedWidth(84)
+
+            duration_spin = QSpinBox()
+            duration_spin.setRange(5, 240)
+            duration_spin.setSuffix(" 分钟")
+            duration_spin.setFixedWidth(96)
+            duration_spin.setValue(duration)
+
+            end_label = QLabel()
+            end_label.setStyleSheet(_HINT_STYLE)
+            end_label.setAlignment(Qt.AlignCenter)
+
+            grid.addWidget(name_label, period, 0)
+            grid.addWidget(time_edit, period, 1)
+            grid.addWidget(duration_spin, period, 2)
+            grid.addWidget(end_label, period, 3)
+
+            index = period - 1
+            self._rows.append((time_edit, duration_spin, end_label))
+            time_edit.timeChanged.connect(
+                lambda *_, i=index: self._update_end(i)
+            )
+            duration_spin.valueChanged.connect(
+                lambda *_, i=index: self._update_end(i)
+            )
+            self._update_end(index)
+            prev_end = start.addSecs(duration * 60)
+
+        area.setWidget(body)
+        lay.addWidget(area)
+
+        buttons = QHBoxLayout()
+        reset_button = QPushButton("恢复默认")
+        reset_button.clicked.connect(self._reset_defaults)
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+        save_button = QPushButton("保存")
+        save_button.setDefault(True)
+        save_button.clicked.connect(self._save)
+        buttons.addWidget(reset_button)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(save_button)
+        lay.addLayout(buttons)
+
+        self.setMinimumWidth(420)
+        self.resize(460, 540)
+        self._center_on_parent()
+
+    def _center_on_parent(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        geo = self.frameGeometry()
+        geo.moveCenter(parent.frameGeometry().center())
+        self.move(geo.topLeft())
+
+    def _update_end(self, index: int) -> None:
+        time_edit, duration_spin, end_label = self._rows[index]
+        end = time_edit.time().addSecs(duration_spin.value() * 60)
+        end_label.setText(end.toString("HH:mm"))
+
+    def _reset_defaults(self) -> None:
+        prev_end: QTime | None = None
+        for period, (time_edit, duration_spin, _) in enumerate(self._rows, 1):
+            times = DEFAULT_PERIOD_TIMES.get(period)
+            if times:
+                start = QTime.fromString(times[0], "HH:mm")
+                duration = _period_duration(*times)
+            else:
+                start = (
+                    prev_end.addSecs(10 * 60) if prev_end is not None else QTime(8, 0)
+                )
+                duration = 45
+            time_edit.setTime(start)
+            duration_spin.setValue(duration)
+            self._update_end(period - 1)
+            prev_end = start.addSecs(duration * 60)
+
+    def _save(self) -> None:
+        result: dict[int, tuple[str, str]] = {}
+        for period, (time_edit, duration_spin, _) in enumerate(self._rows, 1):
+            start = time_edit.time()
+            minutes = start.hour() * 60 + start.minute() + duration_spin.value()
+            if minutes >= 24 * 60:
+                QMessageBox.warning(
+                    self,
+                    "提示",
+                    f"第 {period} 节的结束时间超过 24:00，请调整开始时间或时长",
+                )
+                return
+            end = start.addSecs(duration_spin.value() * 60)
+            result[period] = (start.toString("HH:mm"), end.toString("HH:mm"))
+        self.result = result
         self.accept()
 
 
@@ -548,6 +706,7 @@ class TimetableApp(QMainWindow):
         self.setMinimumSize(1020, 660)
 
         self.timetable = Timetable()
+        self.timetable.period_times = load_period_times()
         self.files: list[str] = []
         self.queue: queue.Queue = queue.Queue()
         self.parsing = False
@@ -597,10 +756,14 @@ class TimetableApp(QMainWindow):
         remove_button.clicked.connect(self.remove_files)
         self.parse_button = QPushButton("开始识别")
         self.parse_button.clicked.connect(self.start_parse)
+        schedule_button = QPushButton("作息时间")
+        schedule_button.setToolTip("设置每节课的开始时间与时长")
+        schedule_button.clicked.connect(self.edit_schedule)
         button_row.addWidget(add_button)
         button_row.addWidget(remove_button)
         button_row.addSpacing(10)
         button_row.addWidget(self.parse_button)
+        button_row.addWidget(schedule_button)
 
         separator = QFrame()
         separator.setFrameShape(QFrame.VLine)
@@ -765,6 +928,20 @@ class TimetableApp(QMainWindow):
         for path in self.files:
             self.file_list.addItem(os.path.basename(path))
 
+    # ------------------------------------------------------------ 作息设置
+
+    def edit_schedule(self) -> None:
+        dialog = ScheduleDialog(
+            self, self.timetable.period_times, self.timetable.max_period()
+        )
+        if dialog.exec_() != QDialog.Accepted or not dialog.result:
+            return
+        self.timetable.period_times = dialog.result
+        save_period_times(dialog.result)
+        self.grid.refresh()
+        self._log("已更新作息时间，周课表预览和日历导出将使用新的时间")
+        self.statusBar().showMessage("作息时间已更新")
+
     # ------------------------------------------------------------ 识别
 
     def start_parse(self) -> None:
@@ -841,6 +1018,7 @@ class TimetableApp(QMainWindow):
     def _on_parse_done(self, courses: list[Course], files: list[str]) -> None:
         timetable = Timetable()
         timetable.courses = list(courses)
+        timetable.period_times = dict(self.timetable.period_times)
         removed = timetable.dedupe()
         timetable.sources = list(files)
         self.timetable = timetable
