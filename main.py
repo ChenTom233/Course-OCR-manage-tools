@@ -3,6 +3,10 @@ import sys
 
 
 def main() -> int:
+    from app.crashlog import install, install_qt_handler
+
+    install()
+
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QFont
     from PyQt5.QtWidgets import QApplication
@@ -10,6 +14,7 @@ def main() -> int:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
+    install_qt_handler()
     app.setApplicationName("课表识别助手")
     app.setFont(QFont("Microsoft YaHei UI", 10))
 

@@ -40,6 +40,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from .crashlog import get_log_path
 from .excel_parser import parse_excel
 from .exporters import export_ics, export_json, export_xlsx
 from .models import Course, DAY_NAMES, DEFAULT_PERIOD_TIMES, Timetable, compress_weeks
@@ -564,6 +565,7 @@ class TimetableApp(QMainWindow):
         self._log("3. 双击结果表格中的课程可以修正识别错误；")
         self._log("4. 导出 Excel / JSON / 日历(ICS)。")
         self._log("提示：日历导出以工具栏里的「第 1 周周一」为基准。")
+        self._log(f"崩溃日志：{get_log_path()}")
 
     # ------------------------------------------------------------ 构建界面
 
@@ -747,7 +749,8 @@ class TimetableApp(QMainWindow):
 
     def remove_files(self) -> None:
         selected = sorted(
-            {item.row() for item in self.file_list.selectedItems()}, reverse=True
+            {self.file_list.row(item) for item in self.file_list.selectedItems()},
+            reverse=True,
         )
         if not selected:
             return
