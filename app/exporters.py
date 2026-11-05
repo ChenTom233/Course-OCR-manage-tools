@@ -261,13 +261,27 @@ def _fold_line(line: str, limit: int = 73) -> str:
     return "\r\n".join(parts)
 
 
+def _duration_before(minutes: int) -> str:
+    """把提前分钟数格式化成 iCalendar TRIGGER 时长，如 -PT15M / -PT1H / -P1D。"""
+    if minutes >= 1440 and minutes % 1440 == 0:
+        return f"-P{minutes // 1440}D"
+    if minutes >= 60 and minutes % 60 == 0:
+        return f"-PT{minutes // 60}H"
+    return f"-PT{minutes}M"
+
+
 def export_ics(
     courses: list[Course],
     path: str,
     first_monday: date | str,
     period_times=None,
+    reminder_minutes: int | None = None,
 ) -> tuple[date, int]:
-    """按学期第一周周一生成日历事件，返回 (对齐后的周一, 事件数)。"""
+    """按学期第一周周一生成日历事件，返回 (对齐后的周一, 事件数)。
+
+    reminder_minutes 不为 None 时，为每个事件附加一个 DISPLAY 提醒，
+    在事件开始前 reminder_minutes 分钟触发。
+    """
     period_times = period_times or DEFAULT_PERIOD_TIMES
     if isinstance(first_monday, str):
         first_monday = date.fromisoformat(first_monday.strip())
@@ -317,19 +331,28 @@ def export_ics(
             dtend = datetime.combine(class_date, end_clock)
             if dtend <= dtstart:
                 dtend = dtstart + timedelta(minutes=45)
-            lines.extend(
-                [
-                    "BEGIN:VEVENT",
-                    f"UID:{uuid.uuid4()}@timetable-ocr",
-                    f"DTSTAMP:{now_stamp}",
-                    f"DTSTART:{dtstart.strftime('%Y%m%dT%H%M%S')}",
-                    f"DTEND:{dtend.strftime('%Y%m%dT%H%M%S')}",
-                    f"SUMMARY:{_ics_escape(course.name)}",
-                    f"LOCATION:{_ics_escape(course.location)}",
-                    f"DESCRIPTION:{_ics_escape(description)}",
-                    "END:VEVENT",
-                ]
-            )
+            event_lines = [
+                "BEGIN:VEVENT",
+                f"UID:{uuid.uuid4()}@timetable-ocr",
+                f"DTSTAMP:{now_stamp}",
+                f"DTSTART:{dtstart.strftime('%Y%m%dT%H%M%S')}",
+                f"DTEND:{dtend.strftime('%Y%m%dT%H%M%S')}",
+                f"SUMMARY:{_ics_escape(course.name)}",
+                f"LOCATION:{_ics_escape(course.location)}",
+                f"DESCRIPTION:{_ics_escape(description)}",
+            ]
+            if reminder_minutes is not None:
+                event_lines.extend(
+                    [
+                        "BEGIN:VALARM",
+                        "ACTION:DISPLAY",
+                        f"DESCRIPTION:{_ics_escape('课程提醒：' + course.name)}",
+                        f"TRIGGER:{_duration_before(reminder_minutes)}",
+                        "END:VALARM",
+                    ]
+                )
+            event_lines.append("END:VEVENT")
+            lines.extend(event_lines)
             event_count += 1
 
     lines.append("END:VCALENDAR")

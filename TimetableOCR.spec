@@ -43,7 +43,8 @@ a = Analysis(
     optimize=0,
 )
 
-# 纯 Widgets 应用不需要 OpenGL 软件渲染、Qt Quick/QML、ANGLE 和 AVIF 解码器
+# 纯 Widgets 应用不需要 OpenGL 软件渲染、Qt Quick/QML、ANGLE、网络、DBus、SVG，
+# 也不需要 WebP/TIFF/TGA/WBMP/ICNS 图片插件和 Pillow 的字体/WebP/色彩管理模块。
 _DROP_BINARIES = (
     'PyQt5/Qt5/bin/opengl32sw.dll',
     'PyQt5/Qt5/bin/Qt5Quick',
@@ -51,15 +52,35 @@ _DROP_BINARIES = (
     'PyQt5/Qt5/bin/d3dcompiler_47.dll',
     'PyQt5/Qt5/bin/libGLESv2.dll',
     'PyQt5/Qt5/bin/libEGL.dll',
+    'PyQt5/Qt5/bin/Qt5Network.dll',
+    'PyQt5/Qt5/bin/Qt5DBus.dll',
+    'PyQt5/Qt5/bin/Qt5WebSockets.dll',
+    'PyQt5/Qt5/bin/Qt5Svg.dll',
     'PyQt5/Qt5/plugins/platforms/qminimal.dll',
     'PyQt5/Qt5/plugins/platforms/qoffscreen.dll',
     'PyQt5/Qt5/plugins/platforms/qwebgl.dll',
     'PyQt5/Qt5/plugins/platformthemes/qxdgdesktopportal.dll',
+    'PyQt5/Qt5/plugins/imageformats/qwebp.dll',
+    'PyQt5/Qt5/plugins/imageformats/qtiff.dll',
+    'PyQt5/Qt5/plugins/imageformats/qicns.dll',
+    'PyQt5/Qt5/plugins/imageformats/qsvg.dll',
+    'PyQt5/Qt5/plugins/imageformats/qtga.dll',
+    'PyQt5/Qt5/plugins/imageformats/qwbmp.dll',
+    'PyQt5/Qt5/plugins/iconengines/qsvgicon.dll',
     'PIL/_avif',
+    'PIL/_imagingft',
+    'PIL/_webp',
+    'PIL/_imagingcms',
 )
 a.binaries = [
     entry for entry in a.binaries
     if not entry[0].replace('\\', '/').startswith(_DROP_BINARIES)
+]
+
+# Qt 自带翻译文件本应用未加载（没有 QTranslator），全部移除以减小体积
+a.datas = [
+    entry for entry in a.datas
+    if not entry[0].replace('\\', '/').lower().endswith('.qm')
 ]
 
 pyz = PYZ(a.pure)

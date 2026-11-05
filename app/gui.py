@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLayout,
     QLineEdit,
@@ -91,6 +92,26 @@ def _normalize_clock(text: str) -> str | None:
     if h > 23 or mi > 59:
         return None
     return f"{h:02d}:{mi:02d}"
+
+
+_REMINDER_OPTIONS = [
+    "不提醒",
+    "提前 5 分钟",
+    "提前 10 分钟",
+    "提前 15 分钟",
+    "提前 30 分钟",
+    "提前 1 小时",
+    "提前 1 天",
+]
+_REMINDER_MINUTES = [None, 5, 10, 15, 30, 60, 1440]
+_REMINDER_LABELS = {
+    5: "5 分钟",
+    10: "10 分钟",
+    15: "15 分钟",
+    30: "30 分钟",
+    60: "1 小时",
+    1440: "1 天",
+}
 
 
 class CourseDialog(QDialog):
@@ -468,6 +489,74 @@ class CohortDialog(QDialog):
             "确认",
             "没有勾选任何班次，所有带班次的课程都会被移除。是否继续？",
         ) != QMessageBox.Yes:
+            return
+        self.result = selected
+        self.accept()
+
+
+class SheetSelectDialog(QDialog):
+    """识别前选择要导入的工作表（Excel 存在多个工作表时弹出）。"""
+
+    def __init__(self, parent=None, entries: list[tuple[str, str]] | None = None):
+        super().__init__(parent)
+        self.result: list[tuple[str, str]] | None = None
+        self.setWindowTitle("选择工作表")
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(2)
+        title = QLabel("检测到多个工作表，请勾选要导入的：")
+        title.setFont(QFont(_UI_FONT, 10, QFont.Bold))
+        lay.addWidget(title)
+        lay.addSpacing(6)
+
+        self.checks: list[tuple[tuple[str, str], QCheckBox]] = []
+        multi_file = len({path for path, _ in (entries or [])}) > 1
+        for path, sheet in (entries or []):
+            label = f"{os.path.basename(path)} → {sheet}" if multi_file else sheet
+            box = QCheckBox(label)
+            box.setChecked(True)
+            lay.addWidget(box)
+            self.checks.append(((path, sheet), box))
+
+        lay.addSpacing(12)
+        buttons = QHBoxLayout()
+        select_all = QPushButton("全选")
+        select_all.clicked.connect(lambda: self._set_all(True))
+        select_none = QPushButton("全不选")
+        select_none.clicked.connect(lambda: self._set_all(False))
+        ok_button = QPushButton("确定")
+        ok_button.setDefault(True)
+        ok_button.clicked.connect(self._save)
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(select_all)
+        buttons.addWidget(select_none)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(ok_button)
+        lay.addLayout(buttons)
+
+        self._center_on_parent()
+
+    def _center_on_parent(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        self.adjustSize()
+        geo = self.frameGeometry()
+        geo.moveCenter(parent.frameGeometry().center())
+        self.move(geo.topLeft())
+
+    def _set_all(self, value: bool) -> None:
+        for _, box in self.checks:
+            box.setChecked(value)
+
+    def _save(self) -> None:
+        selected = [key for key, box in self.checks if box.isChecked()]
+        if not selected:
+            QMessageBox.warning(self, "提示", "请至少选择一个工作表")
             return
         self.result = selected
         self.accept()
@@ -957,16 +1046,53 @@ class TimetableApp(QMainWindow):
                 "识别结果将替换当前课程列表（包括手动修改），是否继续？",
             ) != QMessageBox.Yes:
                 return
+        sheet_selection = self._collect_sheet_selection()
+        if sheet_selection is None:
+            return
         self.parsing = True
         self.parse_button.setEnabled(False)
         self.progress.show()
         self.statusBar().showMessage("正在识别…")
         files = list(self.files)
         threading.Thread(
-            target=self._parse_worker, args=(files,), daemon=True
+            target=self._parse_worker, args=(files, sheet_selection), daemon=True
         ).start()
 
-    def _parse_worker(self, files: list[str]) -> None:
+    def _collect_sheet_selection(self) -> dict[str, list[str]] | None:
+        """枚举各 Excel 文件的工作表；有多个可选时弹窗让用户勾选。
+
+        返回 {文件路径: [选中的工作表名]}；用户取消返回 None。
+        """
+        from .excel_parser import list_excel_sheets
+
+        sheet_map: dict[str, list[str]] = {}
+        entries: list[tuple[str, str]] = []
+        for path in self.files:
+            if not path.lower().endswith((".xlsx", ".xlsm", ".xls")):
+                continue
+            try:
+                names = list_excel_sheets(path)
+            except Exception as exc:
+                self._log(f"读取工作表失败：{os.path.basename(path)} — {exc}")
+                names = []
+            if names:
+                sheet_map[path] = names
+                for name in names:
+                    entries.append((path, name))
+
+        # 没有任何一个 Excel 有多个工作表时，无需询问
+        if not entries or all(len(v) <= 1 for v in sheet_map.values()):
+            return sheet_map
+
+        dialog = SheetSelectDialog(self, entries)
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        selected: dict[str, list[str]] = {path: [] for path in sheet_map}
+        for path, sheet in dialog.result or []:
+            selected[path].append(sheet)
+        return selected
+
+    def _parse_worker(self, files: list[str], sheet_selection: dict[str, list[str]] | None) -> None:
         def log(msg: str) -> None:
             self.queue.put(("log", msg))
 
@@ -977,7 +1103,8 @@ class TimetableApp(QMainWindow):
                 if path.lower().endswith(".pdf"):
                     found = parse_pdf(path, log)
                 else:
-                    found = parse_excel(path, log)
+                    sheet_names = sheet_selection.get(path) if sheet_selection else None
+                    found = parse_excel(path, log, sheet_names=sheet_names)
                 log(f"完成：{os.path.basename(path)}，识别到 {len(found)} 条课程")
                 all_courses.extend(found)
             except Exception as exc:
@@ -1197,6 +1324,20 @@ class TimetableApp(QMainWindow):
             return
         self._after_export(path)
 
+    def _ask_reminder(self) -> tuple[bool, int | None]:
+        """询问导出日历是否带提醒，返回 (是否继续, 提前分钟数或 None)。"""
+        choice, ok = QInputDialog.getItem(
+            self,
+            "日历提醒",
+            "为每门课添加开始前提醒：",
+            _REMINDER_OPTIONS,
+            3,  # 默认「提前 15 分钟」
+            False,
+        )
+        if not ok:
+            return False, None
+        return True, _REMINDER_MINUTES[_REMINDER_OPTIONS.index(choice)]
+
     def export_ics_file(self) -> None:
         if not self._ensure_courses():
             return
@@ -1209,6 +1350,9 @@ class TimetableApp(QMainWindow):
                 "「第 1 周周一」请填写 YYYY-MM-DD，例如 2026-09-07",
             )
             return
+        ok, reminder_minutes = self._ask_reminder()
+        if not ok:
+            return
         path = self._ask_save("课程表.ics", "iCalendar 日历 (*.ics)", ".ics")
         if not path:
             return
@@ -1218,6 +1362,7 @@ class TimetableApp(QMainWindow):
                 path,
                 first_monday,
                 self.timetable.period_times,
+                reminder_minutes,
             )
         except Exception as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
@@ -1230,7 +1375,12 @@ class TimetableApp(QMainWindow):
         missing_weeks = sum(1 for c in self.timetable.courses if not c.weeks)
         if missing_weeks:
             self._log(f"{missing_weeks} 条课程未识别到周次，已按 1-16 周写入日历")
-        self._log(f"日历导出完成，共 {count} 个事件")
+        reminder_text = (
+            f"，提醒：提前 {_REMINDER_LABELS[reminder_minutes]}"
+            if reminder_minutes is not None
+            else "（无提醒）"
+        )
+        self._log(f"日历导出完成，共 {count} 个事件{reminder_text}")
         self._after_export(path)
 
     # ------------------------------------------------------------ 日志

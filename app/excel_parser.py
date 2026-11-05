@@ -121,8 +121,39 @@ def _merge_week_occurrences(courses: list) -> list:
     return merged
 
 
-def parse_excel(path: str, log: LogFn = _noop) -> list:
-    """解析 Excel 课表文件，返回 Course 列表。"""
+def list_excel_sheets(path: str) -> list[str]:
+    """返回 Excel 里可见工作表的名称列表（不解析单元格内容，供选择使用）。"""
+    lower = path.lower()
+    if lower.endswith(".xls"):
+        import xlrd
+
+        book = xlrd.open_workbook(path)
+        return [
+            sheet.name
+            for sheet in book.sheets()
+            if getattr(sheet, "visibility", 0) == 0
+        ]
+    if lower.endswith((".xlsx", ".xlsm")):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(path, data_only=True, read_only=True)
+        names = [
+            ws.title
+            for ws in wb.worksheets
+            if getattr(ws, "sheet_state", "visible") == "visible"
+        ]
+        wb.close()
+        return names
+    return []
+
+
+def parse_excel(
+    path: str, log: LogFn = _noop, sheet_names: list[str] | None = None
+) -> list:
+    """解析 Excel 课表文件，返回 Course 列表。
+
+    sheet_names 不为 None 时只解析这些名称的工作表（其余跳过）。
+    """
     lower = path.lower()
     if lower.endswith(".xls"):
         try:
@@ -139,6 +170,17 @@ def parse_excel(path: str, log: LogFn = _noop) -> list:
     if not sheets:
         log("工作簿里没有可读的工作表")
         return []
+
+    if sheet_names is not None:
+        selected = set(sheet_names)
+        original = sheets
+        sheets = [s for s in original if s[0] in selected]
+        for title, _, _ in original:
+            if title not in selected:
+                log(f"已跳过未选中的工作表「{title}」")
+        if not sheets:
+            log("未选中任何工作表，跳过该文件")
+            return []
 
     results: dict[int, list] = {}
     profiles: dict[int, dict[str, int]] = {}
