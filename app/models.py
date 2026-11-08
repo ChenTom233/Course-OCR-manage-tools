@@ -123,3 +123,27 @@ class Timetable:
 
     def max_period(self) -> int:
         return max((c.period_end for c in self.courses), default=12)
+
+
+def find_conflicts(courses: list[Course]) -> list[tuple[int, int]]:
+    """返回时间冲突的课程下标对 (i, j)，i < j。
+
+    冲突判定：同一天 + 节次区间重叠 + 周次有交集。
+    未识别到周次的课程按整学期 1-16 周处理（与日历导出保持一致）。
+    """
+    pairs: list[tuple[int, int]] = []
+    full_weeks = set(range(1, 17))
+    for i in range(len(courses)):
+        a = courses[i]
+        for j in range(i + 1, len(courses)):
+            b = courses[j]
+            if a.day != b.day:
+                continue
+            if a.period_end < b.period_start or b.period_end < a.period_start:
+                continue
+            wa = set(a.weeks) if a.weeks else full_weeks
+            wb = set(b.weeks) if b.weeks else full_weeks
+            if wa.isdisjoint(wb):
+                continue
+            pairs.append((i, j))
+    return pairs

@@ -45,7 +45,14 @@ from PyQt5.QtWidgets import (
 from .crashlog import get_log_path
 from .excel_parser import parse_excel
 from .exporters import export_ics, export_json, export_xlsx
-from .models import Course, DAY_NAMES, DEFAULT_PERIOD_TIMES, Timetable, compress_weeks
+from .models import (
+    Course,
+    DAY_NAMES,
+    DEFAULT_PERIOD_TIMES,
+    Timetable,
+    compress_weeks,
+    find_conflicts,
+)
 from .parsing import extract_weeks
 from .pdf_parser import parse_pdf
 from .settings import load_period_times, save_period_times
@@ -56,6 +63,7 @@ _GRID_COLORS = [
     "#E1BEE7", "#B2EBF2", "#FFF9C4", "#D7CCC8",
 ]
 _HINT_STYLE = "color: #78909C;"
+_CONFLICT_COLOR = "#FFCDD2"  # 时间冲突课程的高亮底色（浅红）
 
 
 def _default_monday() -> date:
@@ -1169,6 +1177,15 @@ class TimetableApp(QMainWindow):
         self._log(summary)
         self.statusBar().showMessage(summary)
 
+        if self._conflicts():
+            QMessageBox.warning(
+                self,
+                "检测到时间冲突",
+                "以下课程在同一时段上课，可能存在时间冲突：\n\n"
+                f"{self._conflict_summary()}\n\n"
+                "这些课程已在「识别结果」中用浅红色高亮，请确认是否需要删除或修改。",
+            )
+
         if not timetable.courses and parsed_any:
             self._log("班次筛选后没有剩余课程")
         elif not timetable.courses:
@@ -1185,6 +1202,9 @@ class TimetableApp(QMainWindow):
 
     def _refresh_courses(self) -> None:
         table = self.table
+        conflict_rows = {
+            index for pair in find_conflicts(self.timetable.courses) for index in pair
+        }
         table.setUpdatesEnabled(False)
         table.clearContents()
         table.setRowCount(len(self.timetable.courses))
@@ -1209,9 +1229,31 @@ class TimetableApp(QMainWindow):
                     Qt.AlignLeft | Qt.AlignVCenter if col == 0 else Qt.AlignCenter
                 )
                 item.setTextAlignment(alignment)
+                if row in conflict_rows:
+                    item.setBackground(QColor(_CONFLICT_COLOR))
                 table.setItem(row, col, item)
         table.setUpdatesEnabled(True)
         self.grid.refresh()
+
+    def _conflicts(self) -> list[tuple[int, int]]:
+        return find_conflicts(self.timetable.courses)
+
+    def _conflict_summary(self) -> str:
+        """把时间冲突按「星期 + 重叠节次」分组，生成简短文本。"""
+        groups: dict[tuple[int, int, int], set[str]] = {}
+        for i, j in self._conflicts():
+            a = self.timetable.courses[i]
+            b = self.timetable.courses[j]
+            ps = max(a.period_start, b.period_start)
+            pe = min(a.period_end, b.period_end)
+            groups.setdefault((a.day, ps, pe), set()).update((a.name, b.name))
+        lines = []
+        for day, ps, pe in sorted(groups):
+            day_name = DAY_NAMES[day - 1]
+            periods = f"{ps}节" if ps == pe else f"{ps}-{pe}节"
+            names = "、".join(sorted(groups[(day, ps, pe)]))
+            lines.append(f"· {day_name} {periods}：{names}")
+        return "\n".join(lines)
 
     def _on_cell_double_clicked(self, row: int, _column: int) -> None:
         self._edit_course(row)
