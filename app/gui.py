@@ -20,7 +20,6 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLayout,
     QLineEdit,
@@ -55,7 +54,12 @@ from .models import (
 )
 from .parsing import extract_weeks
 from .pdf_parser import parse_pdf
-from .settings import load_period_times, save_period_times
+from .settings import (
+    load_period_times,
+    load_reminders,
+    save_period_times,
+    save_reminders,
+)
 
 _UI_FONT = "Microsoft YaHei UI"
 _GRID_COLORS = [
@@ -104,6 +108,7 @@ def _normalize_clock(text: str) -> str | None:
 
 _REMINDER_OPTIONS = [
     "不提醒",
+    "事件开始时",
     "提前 5 分钟",
     "提前 10 分钟",
     "提前 15 分钟",
@@ -111,8 +116,9 @@ _REMINDER_OPTIONS = [
     "提前 1 小时",
     "提前 1 天",
 ]
-_REMINDER_MINUTES = [None, 5, 10, 15, 30, 60, 1440]
+_REMINDER_MINUTES = [None, 0, 5, 10, 15, 30, 60, 1440]
 _REMINDER_LABELS = {
+    0: "事件开始时",
     5: "5 分钟",
     10: "10 分钟",
     15: "15 分钟",
@@ -286,14 +292,12 @@ def _period_duration(start_text: str, end_text: str) -> int:
     return 45
 
 
-class ScheduleDialog(QDialog):
-    """编辑标准作息：每节课的开始时间与时长。"""
+class ScheduleEditor(QWidget):
+    """作息时间编辑器（嵌入设置窗口）。"""
 
     def __init__(self, parent=None, period_times=None, max_period: int = 12):
         super().__init__(parent)
-        self.result: dict[int, tuple[str, str]] | None = None
-        self.setWindowTitle("作息时间设置")
-        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self._rows: list[tuple[QTimeEdit, QSpinBox, QLabel]] = []
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -306,7 +310,7 @@ class ScheduleDialog(QDialog):
         area = QScrollArea()
         area.setWidgetResizable(True)
         area.setFrameShape(QFrame.NoFrame)
-        area.setMinimumHeight(400)
+        area.setMinimumHeight(360)
         body = QWidget()
         grid = QGridLayout(body)
         grid.setContentsMargins(0, 0, 6, 0)
@@ -319,7 +323,6 @@ class ScheduleDialog(QDialog):
             label.setAlignment(Qt.AlignCenter)
             grid.addWidget(label, 0, col)
 
-        self._rows: list[tuple[QTimeEdit, QSpinBox, QLabel]] = []
         prev_end: QTime | None = None
         for period in range(1, periods + 1):
             start_text, end_text = (period_times or {}).get(period, ("", ""))
@@ -364,33 +367,14 @@ class ScheduleDialog(QDialog):
             prev_end = start.addSecs(duration * 60)
 
         area.setWidget(body)
-        lay.addWidget(area)
+        lay.addWidget(area, 1)
 
-        buttons = QHBoxLayout()
+        reset_row = QHBoxLayout()
         reset_button = QPushButton("恢复默认")
         reset_button.clicked.connect(self._reset_defaults)
-        cancel_button = QPushButton("取消")
-        cancel_button.clicked.connect(self.reject)
-        save_button = QPushButton("保存")
-        save_button.setDefault(True)
-        save_button.clicked.connect(self._save)
-        buttons.addWidget(reset_button)
-        buttons.addStretch(1)
-        buttons.addWidget(cancel_button)
-        buttons.addWidget(save_button)
-        lay.addLayout(buttons)
-
-        self.setMinimumWidth(420)
-        self.resize(460, 540)
-        self._center_on_parent()
-
-    def _center_on_parent(self) -> None:
-        parent = self.parentWidget()
-        if parent is None:
-            return
-        geo = self.frameGeometry()
-        geo.moveCenter(parent.frameGeometry().center())
-        self.move(geo.topLeft())
+        reset_row.addWidget(reset_button)
+        reset_row.addStretch(1)
+        lay.addLayout(reset_row)
 
     def _update_end(self, index: int) -> None:
         time_edit, duration_spin, end_label = self._rows[index]
@@ -414,7 +398,8 @@ class ScheduleDialog(QDialog):
             self._update_end(period - 1)
             prev_end = start.addSecs(duration * 60)
 
-    def _save(self) -> None:
+    def period_times(self) -> dict[int, tuple[str, str]] | None:
+        """校验并返回作息时间；结束时间超过 24:00 时返回 None 并弹提示。"""
         result: dict[int, tuple[str, str]] = {}
         for period, (time_edit, duration_spin, _) in enumerate(self._rows, 1):
             start = time_edit.time()
@@ -425,10 +410,128 @@ class ScheduleDialog(QDialog):
                     "提示",
                     f"第 {period} 节的结束时间超过 24:00，请调整开始时间或时长",
                 )
-                return
+                return None
             end = start.addSecs(duration_spin.value() * 60)
             result[period] = (start.toString("HH:mm"), end.toString("HH:mm"))
-        self.result = result
+        return result
+
+
+class SettingsDialog(QDialog):
+    """设置窗口：作息时间 + 导出提醒。"""
+
+    def __init__(
+        self,
+        parent=None,
+        period_times=None,
+        max_period: int = 12,
+        reminders: list[int] | None = None,
+    ):
+        super().__init__(parent)
+        self.result_period_times: dict[int, tuple[str, str]] | None = None
+        self.result_reminders: list[int] = []
+        self.setWindowTitle("设置")
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        tabs = QTabWidget()
+        self.schedule_editor = ScheduleEditor(tabs, period_times, max_period)
+        tabs.addTab(self.schedule_editor, " 作息时间 ")
+
+        reminder_tab = QWidget()
+        rlay = QVBoxLayout(reminder_tab)
+        rlay.setContentsMargins(16, 16, 16, 16)
+        rlay.setSpacing(8)
+        rlay.addWidget(_hint("导出日历(ICS)时，可为每门课添加最多 3 个开始前提醒。"))
+        rlay.addWidget(_hint("提醒按先后顺序排列，后面的提醒时间不能比前面的晚（例如提醒1为30分钟前时，提醒2不能为15分钟前）。"))
+        rlay.addSpacing(6)
+
+        self.reminder_combos: list[QComboBox] = []
+        for i in range(3):
+            row = QHBoxLayout()
+            label = QLabel(f"提醒{i + 1}：")
+            label.setFixedWidth(52)
+            combo = QComboBox()
+            combo.addItems(_REMINDER_OPTIONS)
+            row.addWidget(label)
+            row.addWidget(combo)
+            row.addStretch(1)
+            rlay.addLayout(row)
+            self.reminder_combos.append(combo)
+        self._set_reminder_values(reminders or [])
+        rlay.addStretch(1)
+        tabs.addTab(reminder_tab, " 导出提醒 ")
+
+        lay.addWidget(tabs, 1)
+
+        buttons = QHBoxLayout()
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+        save_button = QPushButton("保存")
+        save_button.setDefault(True)
+        save_button.clicked.connect(self._save)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(save_button)
+        lay.addLayout(buttons)
+
+        self.resize(500, 600)
+        self._center_on_parent()
+
+    def _center_on_parent(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        geo = self.frameGeometry()
+        geo.moveCenter(parent.frameGeometry().center())
+        self.move(geo.topLeft())
+
+    def _set_reminder_values(self, reminders: list[int]) -> None:
+        for combo in self.reminder_combos:
+            combo.setCurrentIndex(0)
+        for i, minutes in enumerate(reminders[:3]):
+            if minutes in _REMINDER_MINUTES:
+                self.reminder_combos[i].setCurrentIndex(
+                    _REMINDER_MINUTES.index(minutes)
+                )
+
+    def _collect_reminders(self) -> list[int] | None:
+        """收集并校验最多 3 个提醒；非法时返回 None 并弹提示。"""
+        values: list[int] = []
+        for i, combo in enumerate(self.reminder_combos):
+            minutes = _REMINDER_MINUTES[combo.currentIndex()]
+            if minutes is None:
+                for later in self.reminder_combos[i + 1:]:
+                    if _REMINDER_MINUTES[later.currentIndex()] is not None:
+                        QMessageBox.warning(
+                            self,
+                            "提示",
+                            f"提醒{i + 2} 已设置，但提醒{i + 1} 未设置，请按顺序填写。",
+                        )
+                        return None
+                break
+            if values and minutes < values[-1]:
+                QMessageBox.warning(
+                    self,
+                    "提示",
+                    "提醒时间顺序有误：后面的提醒时间不能比前面的晚。\n"
+                    "（例如提醒1为30分钟前时，提醒2不能为15分钟前）",
+                )
+                return None
+            values.append(minutes)
+        return values
+
+    def _save(self) -> None:
+        period_times = self.schedule_editor.period_times()
+        if period_times is None:
+            return
+        reminders = self._collect_reminders()
+        if reminders is None:
+            return
+        self.result_period_times = period_times
+        self.result_reminders = reminders
         self.accept()
 
 
@@ -853,14 +956,14 @@ class TimetableApp(QMainWindow):
         remove_button.clicked.connect(self.remove_files)
         self.parse_button = QPushButton("开始识别")
         self.parse_button.clicked.connect(self.start_parse)
-        schedule_button = QPushButton("作息时间")
-        schedule_button.setToolTip("设置每节课的开始时间与时长")
-        schedule_button.clicked.connect(self.edit_schedule)
+        settings_button = QPushButton("设置")
+        settings_button.setToolTip("作息时间与导出提醒设置")
+        settings_button.clicked.connect(self.open_settings)
         button_row.addWidget(add_button)
         button_row.addWidget(remove_button)
         button_row.addSpacing(10)
         button_row.addWidget(self.parse_button)
-        button_row.addWidget(schedule_button)
+        button_row.addWidget(settings_button)
 
         separator = QFrame()
         separator.setFrameShape(QFrame.VLine)
@@ -1025,19 +1128,24 @@ class TimetableApp(QMainWindow):
         for path in self.files:
             self.file_list.addItem(os.path.basename(path))
 
-    # ------------------------------------------------------------ 作息设置
+    # ------------------------------------------------------------ 设置
 
-    def edit_schedule(self) -> None:
-        dialog = ScheduleDialog(
-            self, self.timetable.period_times, self.timetable.max_period()
+    def open_settings(self) -> None:
+        dialog = SettingsDialog(
+            self,
+            self.timetable.period_times,
+            self.timetable.max_period(),
+            load_reminders(),
         )
-        if dialog.exec_() != QDialog.Accepted or not dialog.result:
+        if dialog.exec_() != QDialog.Accepted:
             return
-        self.timetable.period_times = dialog.result
-        save_period_times(dialog.result)
-        self.grid.refresh()
-        self._log("已更新作息时间，周课表预览和日历导出将使用新的时间")
-        self.statusBar().showMessage("作息时间已更新")
+        if dialog.result_period_times is not None:
+            self.timetable.period_times = dialog.result_period_times
+            save_period_times(dialog.result_period_times)
+            self.grid.refresh()
+        save_reminders(dialog.result_reminders)
+        self._log("设置已保存")
+        self.statusBar().showMessage("设置已保存")
 
     # ------------------------------------------------------------ 识别
 
@@ -1366,20 +1474,6 @@ class TimetableApp(QMainWindow):
             return
         self._after_export(path)
 
-    def _ask_reminder(self) -> tuple[bool, int | None]:
-        """询问导出日历是否带提醒，返回 (是否继续, 提前分钟数或 None)。"""
-        choice, ok = QInputDialog.getItem(
-            self,
-            "日历提醒",
-            "为每门课添加开始前提醒：",
-            _REMINDER_OPTIONS,
-            3,  # 默认「提前 15 分钟」
-            False,
-        )
-        if not ok:
-            return False, None
-        return True, _REMINDER_MINUTES[_REMINDER_OPTIONS.index(choice)]
-
     def export_ics_file(self) -> None:
         if not self._ensure_courses():
             return
@@ -1392,9 +1486,7 @@ class TimetableApp(QMainWindow):
                 "「第 1 周周一」请填写 YYYY-MM-DD，例如 2026-09-07",
             )
             return
-        ok, reminder_minutes = self._ask_reminder()
-        if not ok:
-            return
+        reminders = load_reminders()
         path = self._ask_save("课程表.ics", "iCalendar 日历 (*.ics)", ".ics")
         if not path:
             return
@@ -1404,7 +1496,7 @@ class TimetableApp(QMainWindow):
                 path,
                 first_monday,
                 self.timetable.period_times,
-                reminder_minutes,
+                reminders,
             )
         except Exception as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
@@ -1417,11 +1509,11 @@ class TimetableApp(QMainWindow):
         missing_weeks = sum(1 for c in self.timetable.courses if not c.weeks)
         if missing_weeks:
             self._log(f"{missing_weeks} 条课程未识别到周次，已按 1-16 周写入日历")
-        reminder_text = (
-            f"，提醒：提前 {_REMINDER_LABELS[reminder_minutes]}"
-            if reminder_minutes is not None
-            else "（无提醒）"
-        )
+        if reminders:
+            labels = "、".join(_REMINDER_LABELS.get(m, f"{m} 分钟") for m in reminders)
+            reminder_text = f"，提醒：{labels}"
+        else:
+            reminder_text = "（无提醒）"
         self._log(f"日历导出完成，共 {count} 个事件{reminder_text}")
         self._after_export(path)
 

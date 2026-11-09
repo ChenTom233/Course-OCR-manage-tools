@@ -275,12 +275,12 @@ def export_ics(
     path: str,
     first_monday: date | str,
     period_times=None,
-    reminder_minutes: int | None = None,
+    reminders: list[int] | None = None,
 ) -> tuple[date, int]:
     """按学期第一周周一生成日历事件，返回 (对齐后的周一, 事件数)。
 
-    reminder_minutes 不为 None 时，为每个事件附加一个 DISPLAY 提醒，
-    在事件开始前 reminder_minutes 分钟触发。
+    reminders 为提前分钟数列表时，为每个事件附加对应的多个 DISPLAY 提醒，
+    每个元素在事件开始前相应分钟触发。
     """
     period_times = period_times or DEFAULT_PERIOD_TIMES
     if isinstance(first_monday, str):
@@ -341,13 +341,13 @@ def export_ics(
                 f"LOCATION:{_ics_escape(course.location)}",
                 f"DESCRIPTION:{_ics_escape(description)}",
             ]
-            if reminder_minutes is not None:
+            for minutes in (reminders or []):
                 event_lines.extend(
                     [
                         "BEGIN:VALARM",
                         "ACTION:DISPLAY",
                         f"DESCRIPTION:{_ics_escape('课程提醒：' + course.name)}",
-                        f"TRIGGER:{_duration_before(reminder_minutes)}",
+                        f"TRIGGER:{_duration_before(minutes)}",
                         "END:VALARM",
                     ]
                 )

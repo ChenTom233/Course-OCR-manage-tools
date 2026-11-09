@@ -17,9 +17,15 @@ _qt_handler = None  # 必须保持引用，否则 Qt 里的回调指针会失效
 _installed = False
 
 
+def _app_dir() -> str:
+    """返回应用目录：打包后为 exe 所在目录，源码运行为项目根目录。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def get_log_path() -> str:
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "TimetableOCR", "logs", "crash.log")
+    return os.path.join(_app_dir(), "logs", "crash.log")
 
 
 def get_native_log_path() -> str:
