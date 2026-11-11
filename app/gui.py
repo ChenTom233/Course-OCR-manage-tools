@@ -11,6 +11,7 @@ from PyQt5.QtCore import QRectF, QTime, QTimer, Qt
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -57,17 +58,18 @@ from .pdf_parser import parse_pdf
 from .settings import (
     load_period_times,
     load_reminders,
+    load_theme,
     save_period_times,
     save_reminders,
+    save_theme,
 )
+from . import theme
 
 _UI_FONT = "Microsoft YaHei UI"
 _GRID_COLORS = [
     "#FFE0B2", "#C8E6C9", "#BBDEFB", "#F8BBD0",
     "#E1BEE7", "#B2EBF2", "#FFF9C4", "#D7CCC8",
 ]
-_HINT_STYLE = "color: #78909C;"
-_CONFLICT_COLOR = "#FFCDD2"  # 时间冲突课程的高亮底色（浅红）
 
 
 def _default_monday() -> date:
@@ -77,7 +79,7 @@ def _default_monday() -> date:
 
 def _hint(text: str) -> QLabel:
     label = QLabel(text)
-    label.setStyleSheet(_HINT_STYLE)
+    label.setProperty("hint", "true")
     return label
 
 
@@ -347,7 +349,7 @@ class ScheduleEditor(QWidget):
             duration_spin.setValue(duration)
 
             end_label = QLabel()
-            end_label.setStyleSheet(_HINT_STYLE)
+            end_label.setProperty("hint", "true")
             end_label.setAlignment(Qt.AlignCenter)
 
             grid.addWidget(name_label, period, 0)
@@ -417,7 +419,7 @@ class ScheduleEditor(QWidget):
 
 
 class SettingsDialog(QDialog):
-    """设置窗口：作息时间 + 导出提醒。"""
+    """设置窗口：作息时间 + 导出提醒 + 外观。"""
 
     def __init__(
         self,
@@ -425,10 +427,12 @@ class SettingsDialog(QDialog):
         period_times=None,
         max_period: int = 12,
         reminders: list[int] | None = None,
+        theme_value: str = "light",
     ):
         super().__init__(parent)
         self.result_period_times: dict[int, tuple[str, str]] | None = None
         self.result_reminders: list[int] = []
+        self.result_theme: str = theme.LIGHT
         self.setWindowTitle("设置")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
 
@@ -463,6 +467,19 @@ class SettingsDialog(QDialog):
         self._set_reminder_values(reminders or [])
         rlay.addStretch(1)
         tabs.addTab(reminder_tab, " 导出提醒 ")
+
+        theme_tab = QWidget()
+        tlay = QVBoxLayout(theme_tab)
+        tlay.setContentsMargins(16, 16, 16, 16)
+        tlay.setSpacing(8)
+        tlay.addWidget(_hint("选择界面主题，保存后立即生效："))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("浅色（白）", theme.LIGHT)
+        self.theme_combo.addItem("深色（黑）", theme.DARK)
+        self.theme_combo.setCurrentIndex(0 if theme_value != theme.DARK else 1)
+        tlay.addWidget(self.theme_combo)
+        tlay.addStretch(1)
+        tabs.addTab(theme_tab, " 外观 ")
 
         lay.addWidget(tabs, 1)
 
@@ -532,6 +549,7 @@ class SettingsDialog(QDialog):
             return
         self.result_period_times = period_times
         self.result_reminders = reminders
+        self.result_theme = self.theme_combo.currentData()
         self.accept()
 
 
@@ -741,7 +759,8 @@ class WeekGrid(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.TextAntialiasing)
-        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+        gc = theme.grid_colors()
+        painter.fillRect(self.rect(), QColor(gc["bg"]))
 
         max_period = self._max_period
         head_w, head_h = self._head_w, self._head_h
@@ -750,7 +769,7 @@ class WeekGrid(QWidget):
         row_heights = self._row_heights
         row_tops = self._row_tops
 
-        painter.fillRect(QRectF(0, 0, total_w, head_h), QColor("#37474F"))
+        painter.fillRect(QRectF(0, 0, total_w, head_h), QColor(gc["header"]))
         painter.setPen(QColor("white"))
         painter.setFont(QFont(_UI_FONT, 9, QFont.Bold))
         painter.drawText(
@@ -763,19 +782,19 @@ class WeekGrid(QWidget):
                 Qt.AlignCenter, name,
             )
 
-        line_pen = QPen(QColor("#CFD8DC"), 1)
+        line_pen = QPen(QColor(gc["line"]), 1)
         painter.setFont(QFont(_UI_FONT, 7))
         period_times = self.timetable.period_times
         for p in range(1, max_period + 1):
             y = row_tops[p - 1]
             h = row_heights[p - 1]
             if p % 2 == 0:
-                painter.fillRect(QRectF(0, y, total_w, h), QColor("#FAFAFA"))
+                painter.fillRect(QRectF(0, y, total_w, h), QColor(gc["alt"]))
             painter.setPen(line_pen)
             painter.drawLine(0, y, int(round(total_w)), y)
             start, end = period_times.get(p, ("", ""))
             label = f"{p}\n{start}\n{end}" if start else str(p)
-            painter.setPen(QColor("#546E7A"))
+            painter.setPen(QColor(gc["period"]))
             painter.drawText(QRectF(0, y, head_w, h), Qt.AlignCenter, label)
 
         total_h = int(round(row_tops[-1]))
@@ -938,7 +957,7 @@ class TimetableApp(QMainWindow):
         title_row = QHBoxLayout()
         title = QLabel("课表识别助手")
         title.setFont(QFont(_UI_FONT, 15, QFont.Bold))
-        title.setStyleSheet("color: #263238;")
+        title.setObjectName("appTitle")
         title_row.addWidget(title)
         title_row.addStretch(1)
         title_row.addWidget(QLabel("第 1 周周一："))
@@ -1075,9 +1094,7 @@ class TimetableApp(QMainWindow):
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumBlockCount(5000)
-        self.log_text.setStyleSheet(
-            "QPlainTextEdit { background: #FAFAFA; border: none; }"
-        )
+        self.log_text.setObjectName("logText")
         log_lay.addWidget(self.log_text)
         tabs.addTab(log_tab, " 识别日志 ")
 
@@ -1136,6 +1153,7 @@ class TimetableApp(QMainWindow):
             self.timetable.period_times,
             self.timetable.max_period(),
             load_reminders(),
+            load_theme(),
         )
         if dialog.exec_() != QDialog.Accepted:
             return
@@ -1144,6 +1162,8 @@ class TimetableApp(QMainWindow):
             save_period_times(dialog.result_period_times)
             self.grid.refresh()
         save_reminders(dialog.result_reminders)
+        save_theme(dialog.result_theme)
+        theme.apply_theme(QApplication.instance(), dialog.result_theme)
         self._log("设置已保存")
         self.statusBar().showMessage("设置已保存")
 
@@ -1338,7 +1358,7 @@ class TimetableApp(QMainWindow):
                 )
                 item.setTextAlignment(alignment)
                 if row in conflict_rows:
-                    item.setBackground(QColor(_CONFLICT_COLOR))
+                    item.setBackground(QColor(theme.conflict_color()))
                 table.setItem(row, col, item)
         table.setUpdatesEnabled(True)
         self.grid.refresh()

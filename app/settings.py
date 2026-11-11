@@ -91,3 +91,14 @@ def save_reminders(minutes: list[int]) -> None:
     cleaned = sorted({int(m) for m in minutes if int(m) >= 0})
     settings.setValue("ics/reminders", json.dumps(cleaned))
     settings.sync()
+
+
+def load_theme() -> str:
+    """读取界面主题：'light' 或 'dark'。"""
+    return "dark" if _settings().value("ui/theme", "light") == "dark" else "light"
+
+
+def save_theme(theme: str) -> None:
+    settings = _settings()
+    settings.setValue("ui/theme", "dark" if theme == "dark" else "light")
+    settings.sync()

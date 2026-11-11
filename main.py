@@ -18,6 +18,11 @@ def main() -> int:
     app.setApplicationName("课表识别助手")
     app.setFont(QFont("Microsoft YaHei UI", 10))
 
+    from app.settings import load_theme
+    from app.theme import apply_theme
+
+    apply_theme(app, load_theme())
+
     from app.gui import TimetableApp
 
     window = TimetableApp()
